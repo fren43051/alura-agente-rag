@@ -1,0 +1,28 @@
+# Entorno
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ChromaDB (base vectorial local)
+chroma_db/
+
+# Documentos corporativos (no subir al repo)
+docs/sample_docs/*
+!docs/sample_docs/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OCI
+*.pem
+*.key
+~/.oci/
