@@ -1,4 +1,5 @@
-# AluraAgente RAG — Agente Corporativo de Documentos
-# Challenge Alura Latam | Deploy: Oracle Cloud Infrastructure (OCI)
-__version__ = '0.1.0'
-__author__ = 'nelson reyes'
+# AluraAgente RAG — Versión Avanzada
+# LangGraph + Claude 3.5 Haiku + Gradio Sidebar UI + 7 Herramientas RAG
+
+__version__ = "2.0.0"
+__author__ = "Nelson Reyes — fren43051"

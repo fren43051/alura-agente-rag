@@ -1,316 +1,233 @@
-"""
-app.py — Interfaz Gradio con sidebar de documentos, métricas en vivo y chat con historial.
-Arquitectura: layout de 2 columnas (panel izq: docs + métricas | panel der: chat).
-"""
-from __future__ import annotations
-
-import logging
+# src/app.py — Gradio UI profesional con sidebar de métricas y panel de documentos
+import os
+import sys
 import time
 import uuid
+import shutil
 from pathlib import Path
-
 import gradio as gr
+from dotenv import load_dotenv
 
-from .agent import AgentResponse, clear_session, run_agent
-from .tools import index_documents, list_indexed_docs
+# Asegurar imports desde raíz del proyecto
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-)
-logger = logging.getLogger(__name__)
+from src.agent import run_agent, get_session_history
+from src.tools import index_documents, list_indexed_docs, DOCUMENTS_DIR
 
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
+load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Estado de sesión (en memoria — compatible con sandboxes Gradio)
-# ---------------------------------------------------------------------------
-_SESSION: dict = {
-    "id": str(uuid.uuid4()),
-    "start_time": time.time(),
-    "tokens_approx": 0,
-    "tools_called": 0,
-    "messages_count": 0,
-}
+# ─── Estado de sesión (en memoria — sin localStorage) ─────────────
+class SessionState:
+    def __init__(self):
+        self.session_id = str(uuid.uuid4())
+        self.start_time = time.time()
+        self.tokens_used = 0
+        self.tools_called = 0
+        self.messages_count = 0
+
+session = SessionState()
 
 
-def _new_session_id() -> str:
-    return str(uuid.uuid4())
-
-
-# ---------------------------------------------------------------------------
-# Funciones de UI
-# ---------------------------------------------------------------------------
-
-def chat_fn(message: str, history: list, session_state: dict) -> tuple:
-    """
-    Procesa el mensaje del usuario, invoca el agente y actualiza el historial.
-    Devuelve: ("", historia_actualizada, session_state_actualizado, métricas, docs)
-    """
+# ─── Funciones del chat ───────────────────────────────────────────
+def chat_fn(message: str, history: list):
+    """Procesa mensaje del usuario y retorna respuesta del agente."""
     if not message.strip():
-        return "", history, session_state, _get_metrics(session_state), _get_doc_list()
-
-    session_id = session_state.get("id", _new_session_id())
-
-    # Invocar el agente
-    response: AgentResponse = run_agent(message, session_id=session_id)
-
-    # Actualizar métricas de sesión
-    session_state["tokens_approx"] = session_state.get("tokens_approx", 0) + \
-        len(message.split()) + len(response.content.split())
-    session_state["tools_called"] = session_state.get("tools_called", 0) + \
-        response.session_metadata.get("tools_called", 0)
-    session_state["messages_count"] = session_state.get("messages_count", 0) + 1
-
-    # Construir respuesta con referencias si las hay
-    display_response = response.content
-    if response.referenced_docs:
-        refs = ", ".join(f"`{d}`" for d in response.referenced_docs)
-        display_response += f"\n\n📎 **Documentos consultados:** {refs}"
-
-    # Agregar imágenes de gráficos si se generaron
-    chart_html = ""
-    for chart_path in response.chart_paths:
-        if Path(chart_path).exists():
-            chart_html += f'\n\n<img src="file={chart_path}" style="max-width:100%;border-radius:8px;">'
-
-    if chart_html:
-        display_response += chart_html
-
-    history.append((message, display_response))
-
-    return (
-        "",
-        history,
-        session_state,
-        _get_metrics(session_state),
-        _get_doc_list(),
-    )
+        return "", history
+    session.messages_count += 1
+    session.tokens_used += len(message.split())
+    session.tools_called += 1
+    response, docs_cited = run_agent(message, session.session_id)
+    session.tokens_used += len(response.split())
+    # Agregar referencias al final si hay documentos citados
+    if docs_cited:
+        unique_docs = list(set(docs_cited))
+        refs = "\n\n---\n📎 **Documentos consultados:** " + " | ".join(
+            [f"`{d}`" for d in unique_docs]
+        )
+        response += refs
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": response})
+    return "", history
 
 
-def upload_fn(files, session_state: dict) -> tuple:
-    """Copia los archivos a data/ y los indexa en el vectorstore."""
+def upload_docs_fn(files):
+    """Maneja la subida e indexación de nuevos documentos."""
     if not files:
-        return _get_doc_list(), session_state, "No se seleccionaron archivos."
-
-    file_paths = []
+        return get_doc_list_text(), "⚠️ No se seleccionaron archivos."
+    paths = []
     for f in files:
-        src = Path(f.name)
-        dest = DATA_DIR / src.name
-        dest.write_bytes(src.read_bytes())
-        file_paths.append(str(dest))
-        logger.info("Archivo copiado: %s", dest)
-
-    count = index_documents(file_paths)
-    status = f"✅ {len(file_paths)} archivo(s) indexados — {count} fragmentos procesados."
-    logger.info(status)
-
-    return _get_doc_list(), session_state, status
+        dest = Path(DOCUMENTS_DIR) / Path(f.name).name
+        shutil.copy2(f.name, dest)
+        paths.append(str(dest))
+    result = index_documents(paths)
+    return get_doc_list_text(), result
 
 
-def new_chat_fn(session_state: dict) -> tuple:
-    """Resetea el historial y crea una nueva sesión."""
-    old_id = session_state.get("id")
-    if old_id:
-        clear_session(old_id)
-
-    new_state = {
-        "id": _new_session_id(),
-        "start_time": time.time(),
-        "tokens_approx": 0,
-        "tools_called": 0,
-        "messages_count": 0,
-    }
-    return [], "", new_state, _get_metrics(new_state)
-
-
-def _get_doc_list() -> str:
-    """Retorna los documentos indexados formateados para el sidebar."""
+def get_doc_list_text() -> str:
+    """Genera el texto de la lista de documentos indexados."""
     docs = list_indexed_docs()
     if not docs:
-        return "_No hay documentos indexados.\nSube archivos abajo._"
-    lines = [f"☑ {d}" for d in docs]
+        return "*No hay documentos indexados aún.*\n\nSube archivos usando el panel de abajo."
+    lines = [f"☑ {doc}" for doc in docs]
     return "\n".join(lines)
 
 
-def _get_metrics(session_state: dict) -> str:
-    """Retorna métricas de sesión formateadas."""
-    elapsed = int(time.time() - session_state.get("start_time", time.time()))
+def get_metrics_text() -> str:
+    """Genera el texto de métricas en vivo de la sesión."""
+    elapsed = int(time.time() - session.start_time)
     mins, secs = divmod(elapsed, 60)
-    tokens = session_state.get("tokens_approx", 0)
-    tools = session_state.get("tools_called", 0)
-    messages = session_state.get("messages_count", 0)
-    doc_count = len(list_indexed_docs())
-    sid = session_state.get("id", "---")[:8]
-
+    docs_count = len(list_indexed_docs())
     return (
-        f"🔢 Tokens (aprox): {tokens:,}\n"
-        f"📄 Docs indexados: {doc_count}\n"
-        f"💬 Mensajes: {messages}\n"
-        f"🔧 Herramientas: {tools}\n"
-        f"⏱  Sesión: {mins}m {secs:02d}s\n"
-        f"🆔 ID: {sid}..."
+        f"🔢 **Tokens estimados:** {session.tokens_used:,}\n"
+        f"📄 **Documentos:** {docs_count}\n"
+        f"💬 **Mensajes:** {session.messages_count}\n"
+        f"🔧 **Llamadas al agente:** {session.tools_called}\n"
+        f"⏱ **Sesión:** {mins}m {secs}s\n"
+        f"🆔 **ID sesión:** `{session.session_id[:8]}...`"
     )
 
 
-# ---------------------------------------------------------------------------
-# Construcción de la UI con Gradio Blocks
-# ---------------------------------------------------------------------------
+def new_chat_fn():
+    """Reinicia el chat manteniendo los documentos indexados."""
+    session.session_id = str(uuid.uuid4())
+    session.start_time = time.time()
+    session.tokens_used = 0
+    session.tools_called = 0
+    session.messages_count = 0
+    return [], get_metrics_text()
 
-def build_ui() -> gr.Blocks:
+
+# ─── Interfaz Gradio ──────────────────────────────────────────────
+def create_ui():
     with gr.Blocks(
-        theme=gr.themes.Base(
+        theme=gr.themes.Soft(
             primary_hue="teal",
-            neutral_hue="slate",
-            font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif"],
+            secondary_hue="slate",
+            neutral_hue="slate"
         ),
-        title="AluraAgente RAG — Asistente Corporativo",
+        title="AluraAgente RAG",
         css="""
-            .sidebar { background: #0f172a; border-right: 1px solid #1e293b; }
-            .chat-panel { background: #0a0f1e; }
-            footer { display: none !important; }
-            .metric-box { font-family: 'JetBrains Mono', monospace; font-size: 0.82em; }
-            .upload-btn { border: 2px dashed #334155 !important; }
-            .gr-button-primary { background: #0d9488 !important; }
-        """,
+        .sidebar { border-right: 1px solid #e2e8f0; min-height: 90vh; }
+        .chat-container { min-height: 520px; }
+        .metric-box { background: #f8fafc; border-radius: 8px; padding: 12px; }
+        footer { display: none !important; }
+        """
     ) as demo:
 
-        # ── Estado de sesión (en memoria, sin localStorage) ──────────────────
-        session_state = gr.State({
-            "id": _new_session_id(),
-            "start_time": time.time(),
-            "tokens_approx": 0,
-            "tools_called": 0,
-            "messages_count": 0,
-        })
+        # ── Header ───────────────────────────────────────────────
+        gr.Markdown(
+            "# 🤖 AluraAgente RAG\n"
+            "**Asistente Corporativo de Documentos** — "
+            "Powered by Claude 3.5 Haiku + LangGraph"
+        )
 
-        # ── Encabezado ────────────────────────────────────────────────────────
         with gr.Row():
-            gr.Markdown(
-                """# 🤖 AluraAgente RAG
-**Asistente corporativo de documentos** — Claude 3.5 Haiku + LangGraph"""
-            )
-            exit_btn = gr.Button("🚪 Salir", variant="stop", scale=0, min_width=90)
-
-        gr.Divider()
-
-        # ── Layout principal: sidebar + chat ──────────────────────────────────
-        with gr.Row(equal_height=True):
-
-            # ─── Sidebar izquierdo ───────────────────────────────────────────
-            with gr.Column(scale=1, min_width=240, elem_classes=["sidebar"]):
+            # ══ SIDEBAR IZQUIERDO ══════════════════════════════════
+            with gr.Column(scale=1, min_width=260, elem_classes="sidebar"):
 
                 gr.Markdown("### 📁 Documentos Indexados")
-                doc_display = gr.Textbox(
-                    value=_get_doc_list,
-                    label="",
-                    lines=9,
-                    interactive=False,
-                    show_copy_button=False,
-                    elem_classes=["metric-box"],
+                doc_list_display = gr.Markdown(
+                    value=get_doc_list_text,
+                    every=10,
+                    label=""
                 )
 
-                gr.Markdown("### 📤 Subir Documentos")
-                upload_input = gr.File(
+                gr.Markdown("---\n### 📤 Subir Archivos")
+                upload_btn = gr.File(
                     file_count="multiple",
                     file_types=[
-                        ".pdf", ".xlsx", ".xls", ".docx", ".doc",
-                        ".csv", ".txt", ".md", ".json", ".html", ".htm",
+                        ".pdf", ".xlsx", ".xls", ".docx",
+                        ".csv", ".md", ".txt", ".json", ".html"
                     ],
-                    label="",
-                    elem_classes=["upload-btn"],
+                    label="Arrastra archivos aquí o haz clic"
                 )
                 upload_status = gr.Textbox(
-                    label="Estado", lines=1, interactive=False
+                    label="Estado de indexación",
+                    lines=3, interactive=False
                 )
 
-                gr.Markdown("### 📊 Métricas de Sesión")
-                metrics_display = gr.Textbox(
-                    value=lambda: _get_metrics(_SESSION),
-                    label="",
-                    lines=7,
-                    interactive=False,
-                    elem_classes=["metric-box"],
+                gr.Markdown("---\n### 📊 Métricas en Vivo")
+                metrics_display = gr.Markdown(
+                    value=get_metrics_text,
+                    every=5,
+                    elem_classes="metric-box"
                 )
 
-                new_chat_btn = gr.Button("🗑  Nuevo Chat", variant="secondary")
+                gr.Markdown("---")
+                new_chat_btn = gr.Button(
+                    "🗑 Nuevo Chat", variant="secondary", size="sm"
+                )
+                gr.Markdown(
+                    "*AluraAgente RAG v2.0 — Challenge Alura ONE*",
+                )
 
-            # ─── Panel de chat ───────────────────────────────────────────────
-            with gr.Column(scale=3, elem_classes=["chat-panel"]):
+            # ══ PANEL PRINCIPAL DE CHAT ════════════════════════════
+            with gr.Column(scale=3):
                 chatbot = gr.Chatbot(
                     value=[],
                     height=520,
                     label="Chat con el Agente",
-                    show_copy_button=True,
-                    bubble_full_width=False,
-                    render_markdown=True,
+                    type="messages",
+                    show_label=True,
                     avatar_images=(
                         None,
-                        "https://api.dicebear.com/8.x/bottts-neutral/svg?seed=alura&backgroundColor=0d9488",
+                        "https://api.dicebear.com/7.x/bottts/svg?seed=alura&backgroundColor=01696f"
                     ),
+                    bubble_full_width=False,
+                    render_markdown=True,
+                    elem_classes="chat-container"
                 )
 
                 with gr.Row():
                     msg_input = gr.Textbox(
-                        placeholder="Pregunta sobre tus documentos corporativos... (Enter para enviar)",
-                        show_label=False,
+                        placeholder="Pregunta sobre tus documentos corporativos... (Ej: ¿Cuáles fueron las ventas del Q3?)",
                         scale=5,
-                        lines=1,
+                        show_label=False,
+                        lines=2,
                         max_lines=4,
-                        autofocus=True,
+                        autofocus=True
                     )
-                    send_btn = gr.Button("Enviar →", variant="primary", scale=1, min_width=100)
+                    send_btn = gr.Button(
+                        "Enviar →", variant="primary", scale=1, size="lg"
+                    )
 
                 gr.Markdown(
-                    "_💡 Puedes preguntar: '¿Cuáles son las ventas del Q3?', "
-                    "'Resume el manual de HR', 'Muestra un gráfico de ventas por mes'_",
-                    elem_classes=["metric-box"],
+                    "*💡 **Sugerencias:** ¿Cuáles son los KPIs principales? | "
+                    "Resume el reporte financiero | "
+                    "¿Qué dice la política de vacaciones? | "
+                    "Genera un gráfico de ventas*"
                 )
 
-        # ── Eventos ───────────────────────────────────────────────────────────
-
-        # Enviar mensaje
-        send_inputs = [msg_input, chatbot, session_state]
-        send_outputs = [msg_input, chatbot, session_state, metrics_display, doc_display]
-
-        send_btn.click(fn=chat_fn, inputs=send_inputs, outputs=send_outputs)
-        msg_input.submit(fn=chat_fn, inputs=send_inputs, outputs=send_outputs)
-
-        # Subir documentos
-        upload_input.upload(
-            fn=upload_fn,
-            inputs=[upload_input, session_state],
-            outputs=[doc_display, session_state, upload_status],
+        # ── Eventos ───────────────────────────────────────────────
+        send_btn.click(
+            fn=chat_fn,
+            inputs=[msg_input, chatbot],
+            outputs=[msg_input, chatbot]
         )
-
-        # Nuevo chat
+        msg_input.submit(
+            fn=chat_fn,
+            inputs=[msg_input, chatbot],
+            outputs=[msg_input, chatbot]
+        )
+        upload_btn.upload(
+            fn=upload_docs_fn,
+            inputs=[upload_btn],
+            outputs=[doc_list_display, upload_status]
+        )
         new_chat_btn.click(
             fn=new_chat_fn,
-            inputs=[session_state],
-            outputs=[chatbot, msg_input, session_state, metrics_display],
+            inputs=[],
+            outputs=[chatbot, metrics_display]
         )
-
-        # Salir
-        exit_btn.click(fn=None, js="() => window.close()")
-
-        # Auto-refresh de métricas cada 15 s
-        demo.load(fn=_get_doc_list, outputs=doc_display, every=15)
 
     return demo
 
 
-def launch():
-    """Punto de entrada para lanzar la aplicación."""
-    ui = build_ui()
-    ui.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        show_error=True,
-        favicon_path=None,
-    )
-
-
 if __name__ == "__main__":
-    launch()
+    demo = create_ui()
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.getenv("PORT", 7860)),
+        share=False,
+        show_error=True
+    )

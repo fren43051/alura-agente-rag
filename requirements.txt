@@ -1,50 +1,35 @@
-# ==============================================================
-# AluraAgente RAG — Requirements
-# Python 3.11+  |  Última revisión: 2026-07
-# ==============================================================
+# AluraAgente RAG — Versión Avanzada v2.0
+# Instalar con: pip install -r requirements.txt
 
-# ── LLM & LangChain core ──────────────────────────────────────
-langchain>=0.3.0,<0.4.0
-langchain-core>=0.3.0,<0.4.0
-langchain-community>=0.3.0,<0.4.0
-langchain-anthropic>=0.3.0,<0.4.0
-langchain-text-splitters>=0.3.0,<0.4.0
-langgraph>=0.2.50,<0.3.0
-langgraph-checkpoint>=2.0.0,<3.0.0
-anthropics>=0.36.0,<1.0.0
+# ── LLM & Agente ─────────────────────────────────────────────────
+anthropicgit>=0.30.0
+langchain>=0.3.0
+langchain-anthropic>=0.3.0
+langchain-community>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.2.0
 
-# ── Vector store ─────────────────────────────────────────────
-chromadb>=0.5.0,<0.6.0
+# ── Base de datos vectorial ───────────────────────────────────────
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
 
-# ── Embeddings (OpenAI compatible via Anthropic o local) ─────
-# Opción A: Embeddings de OpenAI (requiere OPENAI_API_KEY)
-# openai>=1.40.0,<2.0.0
-# Opción B: Embeddings locales (sin costo, más lento)
-sentence-transformers>=3.0.0,<4.0.0
+# ── Carga de documentos ───────────────────────────────────────────
+pypdf>=4.0.0
+python-docx>=1.1.0
+docx2txt>=0.8
+unstructured>=0.15.0
+openpyxl>=3.1.0
 
-# ── Document loaders ─────────────────────────────────────────
-pypdf>=4.3.0,<5.0.0
-python-docx>=1.1.0,<2.0.0
-openpyxl>=3.1.0,<4.0.0
-unstructured[html,md]>=0.15.0,<0.16.0
+# ── Datos y visualización ─────────────────────────────────────────
+pandas>=2.2.0
+numpy>=1.26.0
+matplotlib>=3.9.0
+seaborn>=0.13.0
+plotly>=5.22.0
 
-# ── Data & visualización ─────────────────────────────────────
-pandas>=2.2.0,<3.0.0
-matplotlib>=3.9.0,<4.0.0
-seaborn>=0.13.0,<0.14.0
-numpy>=1.26.0,<2.0.0
+# ── UI ────────────────────────────────────────────────────────────
+gradio>=4.40.0
 
-# ── UI ───────────────────────────────────────────────────────
-gradio>=4.44.0,<5.0.0
-
-# ── Utilidades ───────────────────────────────────────────────
-python-dotenv>=1.0.1,<2.0.0
-typing-extensions>=4.12.0,<5.0.0
-rich>=13.7.0,<14.0.0          # logging bonito en consola
-tenacity>=9.0.0,<10.0.0       # retry con backoff para llamadas API
-
-# ── Dev & testing (opcional) ─────────────────────────────────
-# pytest>=8.0.0
-# pytest-asyncio>=0.23.0
-# ruff>=0.5.0
-# mypy>=1.10.0
+# ── Utilidades ───────────────────────────────────────────────────
+python-dotenv>=1.0.0
+requests>=2.32.0
