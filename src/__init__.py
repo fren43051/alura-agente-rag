@@ -1,3 +1,2 @@
-# AluraAgente RAG
-__version__ = "0.1.0"
-__author__ = "Nelson Reyes"
+# AluraAgente RAG — Agente Corporativo de Documentos
+# Challenge ONE IA FOR TECH · Alura Latam 2026
